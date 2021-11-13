@@ -3,34 +3,54 @@ from torch import nn
 
 
 #Gated Linear Units
-class GateLayer(nn.Module):
-    def __init__(self, input_dim):
+class GatingLayer(nn.Module):
+    def __init__(self, x_dim, dropout_rate=None):
         super().__init__()
 
-        self.fc_forward = nn.Linear(input_dim, input_dim)
-        self.fc_gate = nn.Linear(input_dim, input_dim)
+        self.dropout = (nn.Dropout(dropout_rate)
+                        if dropout_rate is not None
+                        else None)
+
+        self.fc_forward = nn.Linear(x_dim, x_dim)
+        self.fc_gate = nn.Linear(x_dim, x_dim)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, input):
-        #input = [batch size, input dim]
+    def forward(self, x):
+        #x = [batch size, x dim]
+        if self.dropout is not None:
+            x = self.dropout(x)
 
-        return self.sigmoid(self.fc_gate(input)) * self.fc_forward(input)
+        return self.sigmoid(self.fc_gate(x)) * self.fc_forward(x)
+
+
+#Add and Normalization
+class AddAndNorm(nn.Module):
+    def __init__(self, x_dim):
+        super().__init__()
+
+        self.layernorm = nn.LayerNorm(x_dim)
+
+    def forward(self, x_gated, x_res):
+        return self.layernorm(x_gated + x_res)
 
 
 #Gated Residual Network
 class GRN(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, x_dim, dropout_rate=None):
         super().__init__()
 
-        self.fc_input = nn.Linear(input_dim, input_dim)
-        self.fc_context = nn.Linear(input_dim, input_dim, bias=False)
+        self.fc_x = nn.Linear(x_dim, x_dim)
+        self.fc_context = nn.Linear(x_dim, x_dim, bias=False)
         self.elu = nn.ELU()
 
-        self.fc_forward = nn.Linear(input_dim, input_dim)
-        self.glu = GateLayer(input_dim)
+        self.fc_forward = nn.Linear(x_dim, x_dim)
+        self.gating_layer = GatingLayer(x_dim, dropout_rate)
+        self.add_and_norm = AddAndNorm(x_dim)
 
+    def forward(self, x, c):
+        #x = [batch size, x dim]
 
-    def forward(self, input):
-        #input = [batch size, input dim]
+        hidden = self.elu(self.fc_x(x) + self.fc_context(c))
+        hidden = self.fc_forward(hidden)
 
-        pass
+        return self.add_and_norm(self.gating_layer(hidden), x)
