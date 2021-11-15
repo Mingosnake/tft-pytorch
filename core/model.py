@@ -36,16 +36,16 @@ class AddAndNorm(nn.Module):
 
 #Gated Residual Network
 class GRN(nn.Module):
-    def __init__(self, x_dim, dropout_rate=None):
+    def __init__(self, x_dim, c_dim, hid_dim, dropout_rate=None):
         super().__init__()
 
-        self.fc_x = nn.Linear(x_dim, x_dim)
-        self.fc_context = nn.Linear(x_dim, x_dim, bias=False)
+        self.fc_x = nn.Linear(x_dim, hid_dim)
+        self.fc_context = nn.Linear(c_dim, hid_dim, bias=False)
         self.elu = nn.ELU()
 
-        self.fc_forward = nn.Linear(x_dim, x_dim)
-        self.gating_layer = GatingLayer(x_dim, dropout_rate)
-        self.add_and_norm = AddAndNorm(x_dim)
+        self.fc_forward = nn.Linear(hid_dim, hid_dim)
+        self.gating_layer = GatingLayer(hid_dim, dropout_rate)
+        self.add_and_norm = AddAndNorm(hid_dim)
 
     def forward(self, x, c):
         #x = [batch size, x dim]
