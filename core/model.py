@@ -123,12 +123,20 @@ class VarSelectNet(nn.Module):
     
     Attributes:
         grn_sel_wt: GRN for selection weight
+        grn_var_list: list of GRN for each variable
     """
     def __init__(self,
                  var_dim,
                  hid_dim,
                  c_dim=None,
                  dropout_rate=None):
+        """
+        Args:
+            var_dim: Number of variables
+            hid_dim: Dimension of hidden layer
+            c_dim: Dimension of context vector
+            dropout_rate: Dropout rate
+        """
         super().__init__()
 
         self.name = 'VarSelectNet'
