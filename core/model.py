@@ -4,6 +4,7 @@ from torch import nn
 
 class GatingLayer(nn.Module):
     """Gated Linear Unit (GLU)."""
+
     def __init__(self, x_dim, out_dim, dropout_rate=None):
         """
         Args:
@@ -36,6 +37,7 @@ class GatingLayer(nn.Module):
 
 class AddAndNorm(nn.Module):
     """Add and Normalization."""
+
     def __init__(self, x_dim):
         """
         Args:
@@ -59,6 +61,7 @@ class AddAndNorm(nn.Module):
 
 class GatedResNet(nn.Module):
     """Gated Residual Network (GRN)."""
+
     def __init__(self,
                  x_dim,
                  hid_dim,
@@ -110,21 +113,22 @@ class GatedResNet(nn.Module):
             hidden = self.elu(self.fc_x(x) + self.fc_context(c))
         else:
             hidden = self.elu(self.fc_x(x))
-        #hidden = [batch size, hid dim]
+        # hidden = [batch size, hid dim]
         hidden = self.fc_forward(hidden)
-        #hidden = [batch size, hid dim]
+        # hidden = [batch size, hid dim]
 
         return self.add_and_norm(self.gating_layer(hidden), skip)
 
 
-#Variable Selection Networks
+# Variable Selection Networks
 class VarSelectNet(nn.Module):
     """Variable Selection Network.
-    
+
     Attributes:
         grn_sel_wt: GRN for selection weight
         grn_var_list: list of GRN for each variable
     """
+
     def __init__(self,
                  var_dim,
                  hid_dim,
@@ -177,18 +181,18 @@ class VarSelectNet(nn.Module):
             var_sel_wt = self.softmax(self.grn_sel_wt(flat, c))
         else:
             var_sel_wt = self.softmax(self.grn_sel_wt(flat))
-        #var_sel_wt = [batch size, var dim]
+        # var_sel_wt = [batch size, var dim]
         var_sel_wt = var_sel_wt.unsqueeze(1)
-        #var_sel_wt = [batch size, 1, var dim]
+        # var_sel_wt = [batch size, 1, var dim]
 
         var_list = []
         for i, grn_var in enumerate(self.grn_var_list):
             var_list.append(grn_var(x[:, i, :]))
         vars = torch.stack(var_list, dim=1)
-        #vars = [batch size, var dim, hid dim]
+        # vars = [batch size, var dim, hid dim]
         output = torch.bmm(var_sel_wt, vars)
-        #output = [batch size, 1, hid dim]
+        # output = [batch size, 1, hid dim]
         output = output.squeeze(1)
-        #output = [batch size, hid dim]
+        # output = [batch size, hid dim]
 
         return output
