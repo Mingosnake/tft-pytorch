@@ -120,7 +120,6 @@ class GatedResNet(nn.Module):
         return self.add_and_norm(self.gating_layer(hidden), skip)
 
 
-# Variable Selection Networks
 class VarSelectNet(nn.Module):
     """Variable Selection Network.
 
@@ -196,3 +195,12 @@ class VarSelectNet(nn.Module):
         # output = [batch size, hid dim]
 
         return output
+
+
+class MultiHeadAttention(nn.Module):
+    """Multi Head Attention.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        
