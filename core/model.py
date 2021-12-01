@@ -35,28 +35,33 @@ class GatingLayer(nn.Module):
         return self.sigmoid(self.fc_gate(x)) * self.fc_forward(x)
 
 
-class AddAndNorm(nn.Module):
-    """Add and Normalization."""
+class GatedSkipConn(nn.Module):
+    """Gated Skip Connection.
+    Gating Layer + Add and Normalization
+    """
 
-    def __init__(self, x_dim):
+    def __init__(self, x_dim, out_dim, dropout_rate=None):
         """
         Args:
             x_dim: Input dimension
+            out_dim: Output dimension
+            dropout_rate: Dropout rate
         """
         super().__init__()
 
-        self.layernorm = nn.LayerNorm(x_dim)
+        self.gating_layer = GatingLayer(x_dim, out_dim, dropout_rate)
+        self.layernorm = nn.LayerNorm(out_dim)
 
-    def forward(self, x_gated, x_res):
+    def forward(self, x_gate, x_skip):
         """
         Args:
-            x_gated: Gated input = [batch size, x dim]
-            x_res: Skipped input = [batch size, x dim]
+            x_gate: Input to gating layer = [batch size, x dim]
+            x_skip: Skipped input = [batch size, x dim]
 
         Returns:
-            Added and normalized output = [batch size, x dim]
+            Added and normalized output = [batch size, out dim]
         """
-        return self.layernorm(x_gated + x_res)
+        return self.layernorm(self.gating_layer(x_gate) + x_skip)
 
 
 class GatedResNet(nn.Module):
@@ -80,10 +85,10 @@ class GatedResNet(nn.Module):
 
         self.name = 'GatedResNet'
 
-        if out_dim is None:
+        if out_dim is None:  # for usual
             self.fc_skip = None
             out_dim = hid_dim
-        else:
+        else:  # for flattened input's GRN
             self.fc_skip = nn.Linear(x_dim, out_dim)
 
         self.fc_x = nn.Linear(x_dim, hid_dim)
@@ -93,8 +98,7 @@ class GatedResNet(nn.Module):
         self.elu = nn.ELU()
 
         self.fc_forward = nn.Linear(hid_dim, hid_dim)
-        self.gating_layer = GatingLayer(hid_dim, out_dim, dropout_rate)
-        self.add_and_norm = AddAndNorm(hid_dim)
+        self.gated_skip_conn = GatedSkipConn(hid_dim, out_dim, dropout_rate)
 
     def forward(self, x, c=None):
         """
@@ -108,7 +112,7 @@ class GatedResNet(nn.Module):
         if (self.fc_context is None) != (c is None):
             raise ValueError(f'{self.name} module is created wrong for c_dim')
 
-        skip = self.fc_skip(x) if self.fc_skip is not None else x
+        skip = x if self.fc_skip is None else self.fc_skip(x)
         if c is not None:
             hidden = self.elu(self.fc_x(x) + self.fc_context(c))
         else:
@@ -117,15 +121,15 @@ class GatedResNet(nn.Module):
         hidden = self.fc_forward(hidden)
         # hidden = [batch size, hid dim]
 
-        return self.add_and_norm(self.gating_layer(hidden), skip)
+        return self.gated_skip_conn(hidden, skip)
 
 
 class VarSelectNet(nn.Module):
     """Variable Selection Network.
 
     Attributes:
-        grn_sel_wt: GRN for selection weight
-        grn_var_list: list of GRN for each variable
+        sel_wt_grn: GRN for selection weights
+        var_grn_list: list of GRN for each variable
     """
 
     def __init__(self,
@@ -146,7 +150,7 @@ class VarSelectNet(nn.Module):
 
         self.c_dim = c_dim
 
-        self.grn_sel_wt = GatedResNet(
+        self.sel_wt_grn = GatedResNet(
             x_dim=var_dim*hid_dim,
             hid_dim=hid_dim,
             c_dim=c_dim,
@@ -155,7 +159,7 @@ class VarSelectNet(nn.Module):
         )
         self.softmax = nn.Softmax(dim=1)
 
-        self.grn_var_list = nn.ModuleList([
+        self.var_grn_list = nn.ModuleList([
             GatedResNet(
                 x_dim=hid_dim,
                 hid_dim=hid_dim,
@@ -177,16 +181,16 @@ class VarSelectNet(nn.Module):
 
         flat = x.view(x.shape[0], -1)
         if c is not None:
-            var_sel_wt = self.softmax(self.grn_sel_wt(flat, c))
+            var_sel_wt = self.softmax(self.sel_wt_grn(flat, c))
         else:
-            var_sel_wt = self.softmax(self.grn_sel_wt(flat))
-        # var_sel_wt = [batch size, var dim]
+            var_sel_wt = self.softmax(self.sel_wt_grn(flat))
+        # var_sel_wt: Variable selection weights = [batch size, var dim]
         var_sel_wt = var_sel_wt.unsqueeze(1)
         # var_sel_wt = [batch size, 1, var dim]
 
         var_list = []
-        for i, grn_var in enumerate(self.grn_var_list):
-            var_list.append(grn_var(x[:, i, :]))
+        for i, var_grn in enumerate(self.var_grn_list):
+            var_list.append(var_grn(x[:, i, :]))
         vars = torch.stack(var_list, dim=1)
         # vars = [batch size, var dim, hid dim]
         output = torch.bmm(var_sel_wt, vars)
@@ -200,7 +204,24 @@ class VarSelectNet(nn.Module):
 class MultiHeadAttention(nn.Module):
     """Multi Head Attention.
     """
-    
-    def __init__(self):
+
+    def __init__(self, src_len, trg_len, hid_dim, n_heads, device='cpu'):
         super().__init__()
-        
+
+        if (hid_dim % n_heads) != 0:
+            raise ValueError('hid_dim should be multiple of n_heads')
+
+        self.hid_dim = hid_dim
+        self.n_heads = n_heads
+        self.attn_dim = hid_dim // n_heads
+
+        self.mask = torch.till(torch.ones(
+            (trg_len, src_len + trg_len),
+            device=device,
+        ))
+
+        self.fc_q = nn.Linear(hid_dim, hid_dim)
+        self.fc_k = nn.Linear(hid_dim, hid_dim)
+        self.fc_v = nn.Linear(hid_dim, self.attn_dim)
+
+        self.fc_h = nn.Linear(self.attn_dim, hid_dim)
