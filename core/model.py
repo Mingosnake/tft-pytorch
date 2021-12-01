@@ -5,7 +5,10 @@ from torch import nn
 class GatingLayer(nn.Module):
     """Gated Linear Unit (GLU)."""
 
-    def __init__(self, x_dim, out_dim, dropout_rate=None):
+    def __init__(self,
+                 x_dim,
+                 out_dim,
+                 dropout_rate=1.0):
         """
         Args:
             x_dim: Input dimension
@@ -14,9 +17,7 @@ class GatingLayer(nn.Module):
         """
         super().__init__()
 
-        self.dropout = (nn.Dropout(dropout_rate)
-                        if dropout_rate is not None
-                        else None)
+        self.dropout = nn.Dropout(dropout_rate)
         self.fc_forward = nn.Linear(x_dim, out_dim)
         self.fc_gate = nn.Linear(x_dim, out_dim)
         self.sigmoid = nn.Sigmoid()
@@ -29,18 +30,21 @@ class GatingLayer(nn.Module):
         Returns:
             Return of gating layer = [batch size, out dim]
         """
-        if self.dropout is not None:
-            x = self.dropout(x)
+        x = self.dropout(x)
 
         return self.sigmoid(self.fc_gate(x)) * self.fc_forward(x)
 
 
 class GatedSkipConn(nn.Module):
     """Gated Skip Connection.
+
     Gating Layer + Add and Normalization
     """
 
-    def __init__(self, x_dim, out_dim, dropout_rate=None):
+    def __init__(self,
+                 x_dim,
+                 out_dim,
+                 dropout_rate=1.0):
         """
         Args:
             x_dim: Input dimension
@@ -72,7 +76,7 @@ class GatedResNet(nn.Module):
                  hid_dim,
                  c_dim=None,
                  out_dim=None,
-                 dropout_rate=None):
+                 dropout_rate=1.0):
         """
         Args:
             x_dim: Input dimension
@@ -155,17 +159,16 @@ class VarSelectNet(nn.Module):
             hid_dim=hid_dim,
             c_dim=c_dim,
             out_dim=var_dim,
-            dropout_rate=dropout_rate,
-        )
+            dropout_rate=dropout_rate)
+
         self.softmax = nn.Softmax(dim=1)
 
         self.var_grn_list = nn.ModuleList([
             GatedResNet(
                 x_dim=hid_dim,
                 hid_dim=hid_dim,
-                dropout_rate=dropout_rate,
-            ) for _ in range(var_dim)
-        ])
+                dropout_rate=dropout_rate)
+            for _ in range(var_dim)])
 
     def forward(self, x: torch.Tensor, c=None):
         """
@@ -191,6 +194,7 @@ class VarSelectNet(nn.Module):
         var_list = []
         for i, var_grn in enumerate(self.var_grn_list):
             var_list.append(var_grn(x[:, i, :]))
+
         vars = torch.stack(var_list, dim=1)
         # vars = [batch size, var dim, hid dim]
         output = torch.bmm(var_sel_wt, vars)
@@ -202,10 +206,13 @@ class VarSelectNet(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi Head Attention.
-    """
+    """Interpretable Multi Head Attention."""
 
-    def __init__(self, src_len, trg_len, hid_dim, n_heads, device='cpu'):
+    def __init__(self,
+                 hid_dim,
+                 n_heads,
+                 dropout_rate,
+                 device='cpu'):
         super().__init__()
 
         if (hid_dim % n_heads) != 0:
@@ -213,15 +220,56 @@ class MultiHeadAttention(nn.Module):
 
         self.hid_dim = hid_dim
         self.n_heads = n_heads
-        self.attn_dim = hid_dim // n_heads
-
-        self.mask = torch.till(torch.ones(
-            (trg_len, src_len + trg_len),
-            device=device,
-        ))
+        attn_dim = hid_dim // n_heads
+        self.attn_dim = attn_dim
 
         self.fc_q = nn.Linear(hid_dim, hid_dim)
         self.fc_k = nn.Linear(hid_dim, hid_dim)
-        self.fc_v = nn.Linear(hid_dim, self.attn_dim)
+        self.fc_v = nn.Linear(hid_dim, attn_dim)
 
-        self.fc_h = nn.Linear(self.attn_dim, hid_dim)
+        self.fc_h = nn.Linear(attn_dim, hid_dim)
+
+        self.dropout = nn.Dropout(dropout_rate)
+
+        self.scale = torch.sqrt(torch.FloatTensor([self.attn_dim])).to(device)
+
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.shape[0]
+
+        Q = self.fc_q(query)
+        K = self.fc_k(key)
+        V = self.fc_v(value)
+        # Q = [batch size, query len, hid dim]
+        # K = [batch size, key len, hid dim]
+        # V = [batch size, value len, attn dim]
+
+        Q = Q.view(
+            batch_size, -1, self.n_heads, self.attn_dim).permute(0, 2, 1, 3)
+        K = K.view(
+            batch_size, -1, self.n_heads, self.attn_dim).permute(0, 2, 1, 3)
+        # Q = [batch size, n heads, query len, attn dim]
+        # K = [batch size, n heads, key len, attn dim]
+        # V = [batch size, value len, attn dim]
+
+        energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
+        # energy = [batch size, n heads, query len, key len]
+
+        if mask is not None:
+            energy = energy.masked_fill(mask == 0, -1e10)
+
+        energy = torch.softmax(energy, dim=-1)
+        attention = torch.mean(energy, dim=1)
+        # attention = [batch size, query len, key len]
+
+        output = torch.bmm(self.dropout(attention), V)
+        # output = [batch size, query len, attn dim]
+
+        output = self.fc_h(output)
+        # output = [batch size, query len, hid dim]
+        
+        return output, attention
+
+
+# mask = torch.tril(
+#     torch.ones((trg_len, src_len + trg_len), device=device),
+#     diagonal=src_len).bool()
