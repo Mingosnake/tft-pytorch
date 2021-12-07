@@ -3,7 +3,14 @@ from torch import nn
 
 
 class GatingLayer(nn.Module):
-    """Gated Linear Unit (GLU)."""
+    """Gated Linear Unit (GLU).
+    
+    Attributes:
+        dropout: Dropout layer
+        fc_forward: Feed forward linear layer
+        fc_gate: Linear layer for gate vector
+        sigmoid: Sigmoid layer
+    """
 
     def __init__(self,
                  x_dim,
@@ -38,7 +45,11 @@ class GatingLayer(nn.Module):
 class GatedSkipConn(nn.Module):
     """Gated Skip Connection.
 
-    Gating Layer + Add and Normalization
+    Gating Layer + Add and Normalization.
+    
+    Attributes:
+        gating_layer: Gating layer
+        layernorm: Layer normalization layer
     """
 
     def __init__(self,
@@ -69,7 +80,16 @@ class GatedSkipConn(nn.Module):
 
 
 class GatedResNet(nn.Module):
-    """Gated Residual Network (GRN)."""
+    """Gated Residual Network (GRN).
+    
+    Attributes:
+        fc_skip: Linear layer for different dimension skip connection
+        fc_x: Linear layer for input vector
+        fc_context: Linear layer for context vector
+        elu: Exponential Linear Unit (ELU) layer
+        fc_forward: Feed forward linear layer
+        gated_skip_conn: Gated skip connection layer
+    """
 
     def __init__(self,
                  x_dim,
@@ -206,7 +226,16 @@ class VarSelectNet(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Interpretable Multi Head Attention."""
+    """Interpretable Multi Head Attention.
+    
+    Attributes:
+        attn_dim: Dimension of attention layer
+        fc_q: Linear layer for query
+        fc_k: Linear layer for key
+        fc_v: Linear layer for value
+        fc_h: Final linear layer for output (combined heads)
+        scale: 
+    """
 
     def __init__(self,
                  hid_dim,
@@ -218,7 +247,6 @@ class MultiHeadAttention(nn.Module):
         if (hid_dim % n_heads) != 0:
             raise ValueError('hid_dim should be multiple of n_heads')
 
-        self.hid_dim = hid_dim
         self.n_heads = n_heads
         attn_dim = hid_dim // n_heads
         self.attn_dim = attn_dim
