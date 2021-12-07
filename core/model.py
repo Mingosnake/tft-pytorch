@@ -4,7 +4,7 @@ from torch import nn
 
 class GatingLayer(nn.Module):
     """Gated Linear Unit (GLU).
-    
+
     Attributes:
         dropout: Dropout layer
         fc_forward: Feed forward linear layer
@@ -46,7 +46,7 @@ class GatedSkipConn(nn.Module):
     """Gated Skip Connection.
 
     Gating Layer + Add and Normalization.
-    
+
     Attributes:
         gating_layer: Gating layer
         layernorm: Layer normalization layer
@@ -81,7 +81,7 @@ class GatedSkipConn(nn.Module):
 
 class GatedResNet(nn.Module):
     """Gated Residual Network (GRN).
-    
+
     Attributes:
         fc_skip: Linear layer for different dimension skip connection
         fc_x: Linear layer for input vector
@@ -227,7 +227,7 @@ class VarSelectNet(nn.Module):
 
 class MultiHeadAttention(nn.Module):
     """Interpretable Multi Head Attention.
-    
+
     Attributes:
         attn_dim: Dimension of attention layer
         fc_q: Linear layer for query
@@ -294,7 +294,7 @@ class MultiHeadAttention(nn.Module):
 
         output = self.fc_h(output)
         # output = [batch size, query len, hid dim]
-        
+
         return output, attention
 
 
