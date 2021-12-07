@@ -83,6 +83,7 @@ class GatedResNet(nn.Module):
     """Gated Residual Network (GRN).
 
     Attributes:
+        name: Name of Module
         fc_skip: Linear layer for different dimension skip connection
         fc_x: Linear layer for input vector
         fc_context: Linear layer for context vector
@@ -152,15 +153,18 @@ class VarSelectNet(nn.Module):
     """Variable Selection Network.
 
     Attributes:
+        name: Name of module
+        c_dim: Dimension of context vector
         sel_wt_grn: GRN for selection weights
-        var_grn_list: list of GRN for each variable
+        softmax: Softmax layer
+        var_grn_list: List of GRN for each variable
     """
 
     def __init__(self,
                  var_dim,
                  hid_dim,
                  c_dim=None,
-                 dropout_rate=None):
+                 dropout_rate=1.0):
         """
         Args:
             var_dim: Number of variables
@@ -229,12 +233,14 @@ class MultiHeadAttention(nn.Module):
     """Interpretable Multi Head Attention.
 
     Attributes:
+        n_heads: Number of heads
         attn_dim: Dimension of attention layer
         fc_q: Linear layer for query
         fc_k: Linear layer for key
         fc_v: Linear layer for value
         fc_h: Final linear layer for output (combined heads)
-        scale: 
+        dropout: Dropout layer
+        scale: Scale factor of dot-product attention
     """
 
     def __init__(self,
@@ -242,6 +248,13 @@ class MultiHeadAttention(nn.Module):
                  n_heads,
                  dropout_rate,
                  device='cpu'):
+        """
+        Args:
+            hid_dim: Dimension of input and output in multi-head attention
+            n_heads: Number of heads
+            dropout_rate: Dropout rate
+            device: Pytorch device
+        """
         super().__init__()
 
         if (hid_dim % n_heads) != 0:
@@ -262,6 +275,21 @@ class MultiHeadAttention(nn.Module):
         self.scale = torch.sqrt(torch.FloatTensor([self.attn_dim])).to(device)
 
     def forward(self, query, key, value, mask=None):
+        """
+        Args:
+            query: Query for multi-head attention
+                = [batch size, query len, hid dim]
+            key: Key for multi-head attention
+                = [batch size, key len, hid dim]
+            value: Value for multi-head attention
+                = [batch size, value len, hid dim]
+            mask: Masking tensor = [1, 1, query len, key len]
+
+        Returns:
+            output: Output of multi-head attention
+                = [batch size, query len, hid dim]
+            attention: Attention weights = [batch size, query len, key len]
+        """
         batch_size = query.shape[0]
 
         Q = self.fc_q(query)
