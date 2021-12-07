@@ -12,10 +12,7 @@ class GatingLayer(nn.Module):
         sigmoid: Sigmoid layer
     """
 
-    def __init__(self,
-                 x_dim,
-                 out_dim,
-                 dropout_rate=1.0):
+    def __init__(self, x_dim, out_dim, dropout_rate=1.0):
         """
         Args:
             x_dim: Input dimension
@@ -52,10 +49,7 @@ class GatedSkipConn(nn.Module):
         layernorm: Layer normalization layer
     """
 
-    def __init__(self,
-                 x_dim,
-                 out_dim,
-                 dropout_rate=1.0):
+    def __init__(self, x_dim, out_dim, dropout_rate=1.0):
         """
         Args:
             x_dim: Input dimension
@@ -92,12 +86,9 @@ class GatedResNet(nn.Module):
         gated_skip_conn: Gated skip connection layer
     """
 
-    def __init__(self,
-                 x_dim,
-                 hid_dim,
-                 c_dim=None,
-                 out_dim=None,
-                 dropout_rate=1.0):
+    def __init__(
+        self, x_dim, hid_dim, c_dim=None, out_dim=None, dropout_rate=1.0
+    ):
         """
         Args:
             x_dim: Input dimension
@@ -108,7 +99,7 @@ class GatedResNet(nn.Module):
         """
         super().__init__()
 
-        self.name = 'GatedResNet'
+        self.name = "GatedResNet"
 
         if out_dim is None:  # for usual
             self.fc_skip = None
@@ -117,9 +108,11 @@ class GatedResNet(nn.Module):
             self.fc_skip = nn.Linear(x_dim, out_dim)
 
         self.fc_x = nn.Linear(x_dim, hid_dim)
-        self.fc_context = (nn.Linear(c_dim, hid_dim, bias=False)
-                           if c_dim is not None
-                           else None)
+        self.fc_context = (
+            nn.Linear(c_dim, hid_dim, bias=False)
+            if c_dim is not None
+            else None
+        )
         self.elu = nn.ELU()
 
         self.fc_forward = nn.Linear(hid_dim, hid_dim)
@@ -135,7 +128,7 @@ class GatedResNet(nn.Module):
             Output of GRN = [batch size, out dim]
         """
         if (self.fc_context is None) != (c is None):
-            raise ValueError(f'{self.name} module is created wrong for c_dim')
+            raise ValueError(f"{self.name} module is created wrong for c_dim")
 
         skip = x if self.fc_skip is None else self.fc_skip(x)
         if c is not None:
@@ -160,11 +153,7 @@ class VarSelectNet(nn.Module):
         var_grn_list: List of GRN for each variable
     """
 
-    def __init__(self,
-                 var_dim,
-                 hid_dim,
-                 c_dim=None,
-                 dropout_rate=1.0):
+    def __init__(self, var_dim, hid_dim, c_dim=None, dropout_rate=1.0):
         """
         Args:
             var_dim: Number of variables
@@ -174,25 +163,28 @@ class VarSelectNet(nn.Module):
         """
         super().__init__()
 
-        self.name = 'VarSelectNet'
+        self.name = "VarSelectNet"
 
         self.c_dim = c_dim
 
         self.sel_wt_grn = GatedResNet(
-            x_dim=var_dim*hid_dim,
+            x_dim=var_dim * hid_dim,
             hid_dim=hid_dim,
             c_dim=c_dim,
             out_dim=var_dim,
-            dropout_rate=dropout_rate)
+            dropout_rate=dropout_rate,
+        )
 
         self.softmax = nn.Softmax(dim=1)
 
-        self.var_grn_list = nn.ModuleList([
-            GatedResNet(
-                x_dim=hid_dim,
-                hid_dim=hid_dim,
-                dropout_rate=dropout_rate)
-            for _ in range(var_dim)])
+        self.var_grn_list = nn.ModuleList(
+            [
+                GatedResNet(
+                    x_dim=hid_dim, hid_dim=hid_dim, dropout_rate=dropout_rate
+                )
+                for _ in range(var_dim)
+            ]
+        )
 
     def forward(self, x: torch.Tensor, c=None):
         """
@@ -201,10 +193,11 @@ class VarSelectNet(nn.Module):
             c: Context = [batch size, c dim]
 
         Returns:
-            output: Output of Variable Selection Network = [batch size, hid dim]
+            output: Output of Variable Selection Network
+                = [batch size, hid dim]
         """
         if (self.c_dim is None) != (c is None):
-            raise ValueError(f'{self.name} module is created wrong for c_dim')
+            raise ValueError(f"{self.name} module is created wrong for c_dim")
 
         flat = x.view(x.shape[0], -1)
         if c is not None:
@@ -230,7 +223,7 @@ class VarSelectNet(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Interpretable Multi Head Attention.
+    """Interpretable Multi-Head Attention.
 
     Attributes:
         n_heads: Number of heads
@@ -243,11 +236,7 @@ class MultiHeadAttention(nn.Module):
         scale: Scale factor of dot-product attention
     """
 
-    def __init__(self,
-                 hid_dim,
-                 n_heads,
-                 dropout_rate,
-                 device='cpu'):
+    def __init__(self, hid_dim, n_heads, dropout_rate, device="cpu"):
         """
         Args:
             hid_dim: Dimension of input and output in multi-head attention
@@ -258,7 +247,7 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
 
         if (hid_dim % n_heads) != 0:
-            raise ValueError('hid_dim should be multiple of n_heads')
+            raise ValueError("hid_dim should be multiple of n_heads")
 
         self.n_heads = n_heads
         attn_dim = hid_dim // n_heads
@@ -299,10 +288,12 @@ class MultiHeadAttention(nn.Module):
         # K = [batch size, key len, hid dim]
         # V = [batch size, value len, attn dim]
 
-        Q = Q.view(
-            batch_size, -1, self.n_heads, self.attn_dim).permute(0, 2, 1, 3)
-        K = K.view(
-            batch_size, -1, self.n_heads, self.attn_dim).permute(0, 2, 1, 3)
+        Q = Q.view(batch_size, -1, self.n_heads, self.attn_dim).permute(
+            0, 2, 1, 3
+        )
+        K = K.view(batch_size, -1, self.n_heads, self.attn_dim).permute(
+            0, 2, 1, 3
+        )
         # Q = [batch size, n heads, query len, attn dim]
         # K = [batch size, n heads, key len, attn dim]
         # V = [batch size, value len, attn dim]
@@ -324,6 +315,46 @@ class MultiHeadAttention(nn.Module):
         # output = [batch size, query len, hid dim]
 
         return output, attention
+
+
+class StaticCovariateEncoders(nn.Module):
+    """Static Covariate Encoders.
+
+    Attributes:
+        grn_list: List of GRN for contexts
+    """
+
+    def __init__(self, hid_dim, dropout_rate):
+        """
+        Args:
+            hid_dim: Dimension of Static Covariate Encoders
+            dropout_rate: Dropout rate
+        """
+        super().__init__()
+
+        self.grn_list = nn.ModuleList(
+            [
+                GatedResNet(hid_dim, hid_dim, dropout_rate=dropout_rate)
+                for _ in range(4)
+            ]
+        )
+
+    def forward(self, x):
+        """
+        Args:
+            x: Input of Static Covariate Encoders = [batch size, hid dim]
+        """
+        c_selection = self.grn_list[0](x)
+        c_cell = self.grn_list[1](x)
+        c_hidden = self.grn_list[2](x)
+        c_enrichment = self.grn_list[3](x)
+
+        return c_selection, c_cell, c_hidden, c_enrichment
+
+
+class Seq2Seq(nn.Module):
+    def __init__(self):
+        super().__init__()
 
 
 # mask = torch.tril(
