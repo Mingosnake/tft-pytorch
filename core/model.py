@@ -40,9 +40,9 @@ class GatingLayer(nn.Module):
 
 
 class GatedSkipConn(nn.Module):
-    """Gated Skip Connection.
+    """Gated skip connection.
 
-    Gating Layer + Add and Normalization.
+    Gating layer + add and normalization.
 
     Attributes:
         gating_layer: Gating layer
@@ -74,14 +74,14 @@ class GatedSkipConn(nn.Module):
 
 
 class GatedResNet(nn.Module):
-    """Gated Residual Network (GRN).
+    """Gated residual network (GRN).
 
     Attributes:
         name: Name of Module
         fc_skip: Linear layer for different dimension skip connection
         fc_x: Linear layer for input vector
         fc_context: Linear layer for context vector
-        elu: Exponential Linear Unit (ELU) layer
+        elu: Exponential linear unit (ELU) layer
         fc_forward: Feed forward linear layer
         gated_skip_conn: Gated skip connection layer
     """
@@ -143,7 +143,7 @@ class GatedResNet(nn.Module):
 
 
 class VarSelectNet(nn.Module):
-    """Variable Selection Network.
+    """Variable selection network.
 
     Attributes:
         name: Name of module
@@ -193,7 +193,7 @@ class VarSelectNet(nn.Module):
             c: Context = [batch size, c dim]
 
         Returns:
-            output: Output of Variable Selection Network
+            output: Output of variable selection network
                 = [batch size, hid dim]
         """
         if (self.c_dim is None) != (c is None):
@@ -223,7 +223,7 @@ class VarSelectNet(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """Interpretable Multi-Head Attention.
+    """Interpretable multi-head attention.
 
     Attributes:
         n_heads: Number of heads
@@ -236,7 +236,7 @@ class MultiHeadAttention(nn.Module):
         scale: Scale factor of dot-product attention
     """
 
-    def __init__(self, hid_dim, n_heads, dropout_rate, device="cpu"):
+    def __init__(self, hid_dim, n_heads, dropout_rate=1.0):
         """
         Args:
             hid_dim: Dimension of input and output in multi-head attention
@@ -261,7 +261,7 @@ class MultiHeadAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout_rate)
 
-        self.scale = torch.sqrt(torch.FloatTensor([self.attn_dim])).to(device)
+        self.scale = torch.sqrt(torch.FloatTensor([self.attn_dim]))
 
     def forward(self, query, key, value, mask=None):
         """
@@ -279,6 +279,7 @@ class MultiHeadAttention(nn.Module):
                 = [batch size, query len, hid dim]
             attention: Attention weights = [batch size, query len, key len]
         """
+        self.scale = self.scale.to(query.device)
         batch_size = query.shape[0]
 
         Q = self.fc_q(query)
@@ -318,16 +319,16 @@ class MultiHeadAttention(nn.Module):
 
 
 class StaticCovariateEncoders(nn.Module):
-    """Static Covariate Encoders.
+    """Static covariate encoders.
 
     Attributes:
         grn_list: List of GRN for contexts
     """
 
-    def __init__(self, hid_dim, dropout_rate):
+    def __init__(self, hid_dim, dropout_rate=1.0):
         """
         Args:
-            hid_dim: Dimension of Static Covariate Encoders
+            hid_dim: Dimension of static covariate encoders
             dropout_rate: Dropout rate
         """
         super().__init__()
@@ -342,7 +343,17 @@ class StaticCovariateEncoders(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: Input of Static Covariate Encoders = [batch size, hid dim]
+            x: Input of static covariate encoders = [batch size, hid dim]
+        
+        Returns:
+            c_selection: Context vector for variable selection network
+                = [batch size, hid dim]
+            c_cell: Context vector for initial cell state of LSTM
+                = [batch size, hid dim]
+            c_hidden: Context vector for initial cell state of LSTM
+                = [batch size, hid dim]
+            c_enrichment: Context vector for static enrichment layer
+                = [batch size, hid dim]
         """
         c_selection = self.grn_list[0](x)
         c_cell = self.grn_list[1](x)
@@ -353,8 +364,62 @@ class StaticCovariateEncoders(nn.Module):
 
 
 class Seq2Seq(nn.Module):
-    def __init__(self):
+    """Sequence to sequence layer for locality enhancement.
+    
+    Attributes:
+        static_sel: Variable selection network for static metadata
+        static_encoders: Static covariate encoders
+        past_sel: Variable selection network for past inputs
+        future_sel: Variable selection network for known future inputs
+        encoder_lstm: Encoder LSTM
+        decoder_lstm: Decoder LSTM
+        gated_skip_conn: Gated skip connection layer
+    """
+
+    def __init__(
+        self, static_dim, past_dim, future_dim, hid_dim, dropout_rate=1.0,
+    ):
+        """
+        Args:
+            static_dim: Dimension of static metadata
+            past_dim: Dimension of past inputs
+            future_dim: Dimension of known future inputs
+            hid_dim: Dimension of model
+            dropout_rate: Dropout rate
+        """
         super().__init__()
+
+        self.static_sel = VarSelectNet(
+            static_dim, hid_dim, dropout_rate=dropout_rate
+        )
+        self.static_encoders = StaticCovariateEncoders(
+            hid_dim, dropout_rate=dropout_rate
+        )
+        self.past_sel = VarSelectNet(
+            past_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
+        )
+        self.future_sel = VarSelectNet(
+            future_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
+        )
+        self.encoder_lstm = nn.LSTM(
+            hid_dim, hid_dim, batch_first=True, dropout=dropout_rate
+        )
+        self.decoder_lstm = nn.LSTM(
+            hid_dim, hid_dim, batch_first=True, dropout=dropout_rate
+        )
+        self.gated_skip_conn = GatedSkipConn(
+            hid_dim, hid_dim, dropout_rate=dropout_rate
+        )
+
+    def forward(self, static, past, future):
+        """
+        Args:
+            static: Static metadata = [batch size, static dim, hid dim]
+            past: Past inputs = [batch size, past len, past dim, hid dim]
+            future: Known future inputs
+                = [batch size, future len, future dim, hid dim]
+        """
+        selected_static = self.static_sel(static)
 
 
 # mask = torch.tril(
