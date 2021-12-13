@@ -208,13 +208,12 @@ class VarSelectNet(nn.Module):
         var_sel_wt = var_sel_wt.unsqueeze(1)
         # var_sel_wt = [batch size, 1, var dim]
 
-        var_list = []
-        for i, var_grn in enumerate(self.var_grn_list):
-            var_list.append(var_grn(x[:, i, :]))
-
-        vars = torch.stack(var_list, dim=1)
-        # vars = [batch size, var dim, hid dim]
-        output = torch.bmm(var_sel_wt, vars)
+        var_list = [
+            var_grn(x[:, i, :]) for i, var_grn in enumerate(self.var_grn_list)
+        ]
+        variables = torch.stack(var_list, dim=1)
+        # variables = [batch size, var dim, hid dim]
+        output = torch.bmm(var_sel_wt, variables)
         # output = [batch size, 1, hid dim]
         output = output.squeeze(1)
         # output = [batch size, hid dim]
@@ -369,7 +368,7 @@ class Seq2Seq(nn.Module):
     Attributes:
         static_sel: Variable selection network for static metadata
         static_encoders: Static covariate encoders
-        past_sel: Variable selection network for past inputs
+        history_sel: Variable selection network for historical inputs
         future_sel: Variable selection network for known future inputs
         encoder_lstm: Encoder LSTM
         decoder_lstm: Decoder LSTM
@@ -377,12 +376,12 @@ class Seq2Seq(nn.Module):
     """
 
     def __init__(
-        self, static_dim, past_dim, future_dim, hid_dim, dropout_rate=1.0,
+        self, static_dim, history_dim, future_dim, hid_dim, dropout_rate=1.0,
     ):
         """
         Args:
             static_dim: Dimension of static metadata
-            past_dim: Dimension of past inputs
+            history_dim: Dimension of historical inputs
             future_dim: Dimension of known future inputs
             hid_dim: Dimension of model
             dropout_rate: Dropout rate
@@ -395,8 +394,8 @@ class Seq2Seq(nn.Module):
         self.static_encoders = StaticCovariateEncoders(
             hid_dim, dropout_rate=dropout_rate
         )
-        self.past_sel = VarSelectNet(
-            past_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
+        self.history_sel = VarSelectNet(
+            history_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
         )
         self.future_sel = VarSelectNet(
             future_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
@@ -411,15 +410,75 @@ class Seq2Seq(nn.Module):
             hid_dim, hid_dim, dropout_rate=dropout_rate
         )
 
-    def forward(self, static, past, future):
+    def forward(self, static, history: torch.Tensor, future: torch.Tensor):
         """
         Args:
             static: Static metadata = [batch size, static dim, hid dim]
-            past: Past inputs = [batch size, past len, past dim, hid dim]
+            history: Historical inputs
+                = [batch size, history len, history dim, hid dim]
             future: Known future inputs
                 = [batch size, future len, future dim, hid dim]
+                
+        Returns:
+            feature_history: Historical temporal features
+                = [batch size, history len, hid dim]
+            feature_future: Future temporal features
+                = [batch size, future len, hid dim]
+            c_enrichment: Context vector for static enrichment layer
+                = [batch size, hid dim]
         """
         selected_static = self.static_sel(static)
+        # selected_static = [batch size, hid dim]
+
+        c_selection, c_cell, c_hidden, c_enrichment = self.static_encoders(
+            selected_static
+        )
+        # c_selection, ... = [batch size, hid dim]
+
+        history_len = history.shape[1]
+        history_list = [
+            self.history_sel(history[:, i, :, :], c=c_selection)
+            for i in range(history_len)
+        ]
+        selected_history = torch.stack(history_list, dim=1)
+        # selected_history = [batch size, history len, hid dim]
+
+        future_len = future.shape[1]
+        future_list = [
+            self.future_sel(future[:, i, :, :], c=c_selection)
+            for i in range(future_len)
+        ]
+        selected_future = torch.stack(future_list, dim=1)
+        # selected_future = [batch size, future len, hid dim]
+
+        out_lstm_history, (hidden_state, cell_state) = self.encoder_lstm(
+            selected_history, (c_hidden, c_cell)
+        )
+        # out_lstm_history = [batch size, history len, hid dim]
+        out_lstm_future, _ = self.decoder_lstm(
+            selected_future, (hidden_state, cell_state)
+        )
+        # out_lstm_future = [batch size, future len, hid dim]
+
+        feature_history_list = [
+            self.gated_skip_conn(
+                out_lstm_history[:, i, :], selected_history[:, i, :]
+            )
+            for i in range(history_len)
+        ]
+        feature_history = torch.stack(feature_history_list, dim=1)
+        # feature_history = [batch size, history len, hid dim]
+
+        feature_future_list = [
+            self.gated_skip_conn(
+                out_lstm_future[:, i, :], selected_future[:, i, :]
+            )
+            for i in range(future_len)
+        ]
+        feature_future = torch.stack(feature_future_list, dim=1)
+        # feature_future = [batch size, future len, hid dim]
+
+        return feature_history, feature_future, c_enrichment
 
 
 # mask = torch.tril(
