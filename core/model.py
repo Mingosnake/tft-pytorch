@@ -241,7 +241,6 @@ class MultiHeadAttention(nn.Module):
             hid_dim: Dimension of input and output in multi-head attention
             n_heads: Number of heads
             dropout_rate: Dropout rate
-            device: Pytorch device
         """
         super().__init__()
 
@@ -481,6 +480,111 @@ class Seq2Seq(nn.Module):
         return feature_history, feature_future, c_enrichment
 
 
-# mask = torch.tril(
-#     torch.ones((trg_len, src_len + trg_len), device=device),
-#     diagonal=src_len).bool()
+class TemporalFusionDecoder(nn.Module):
+    """Temporal fusion decoder.
+    
+    Attributes:
+        static_enrichment_grn: Gated Residual Network for static enrichment
+        multi_head_attention: Interpretable multi-head attention layer
+        gated_skip_conn: Gated skip connection layer
+        feed_forward_grn: Gated Residual Network for position-wise feed-forward
+    """
+
+    def __init__(self, hid_dim, n_heads, dropout_rate=1.0):
+        super().__init__()
+
+        self.static_enrichment_grn = GatedResNet(
+            hid_dim, hid_dim, c_dim=hid_dim, dropout_rate=dropout_rate
+        )
+        self.multi_head_attention = MultiHeadAttention(
+            hid_dim, n_heads, dropout_rate=dropout_rate
+        )
+        self.gated_skip_conn = GatedSkipConn(
+            hid_dim, hid_dim, dropout_rate=dropout_rate
+        )
+        self.feed_forward_grn = GatedResNet(
+            hid_dim, hid_dim, dropout_rate=dropout_rate
+        )
+
+    def forward(self, feature_history, feature_future, c_enrichment):
+        """
+        Args:
+            feature_history: Historical temporal features
+                = [batch size, history len, hid dim]
+            feature_future: Future temporal features
+                = [batch size, future len, hid dim]
+            c_enrichment: Context vector for static enrichment layer
+                = [batch size, hid dim]
+                
+        Returns:
+            out_decoder: Output of temporal fusion decoder
+                = [batch size, future len, hid dim]
+            attention_score: Attention weights
+                = [batch size, future len, history len + future len]
+        """
+        history_len = feature_history.shape[1]
+        enriched_history_list = [
+            self.static_enrichment_grn(
+                feature_history[:, i, :], c=c_enrichment
+            )
+            for i in range(history_len)
+        ]
+        enriched_history = torch.stack(enriched_history_list, dim=1)
+        # enriched_history = [batch size, history len, hid dim]
+
+        future_len = feature_future.shape[1]
+        enriched_future_list = [
+            self.static_enrichment_grn(feature_future[:, i, :], c=c_enrichment)
+            for i in range(future_len)
+        ]
+        enriched_future = torch.stack(enriched_future_list, dim=1)
+        # enriched_future = [batch size, future len, hid dim]
+
+        enriched_entire = torch.cat((enriched_history, enriched_future), dim=1)
+        # enriched_entire = [batch size, history len + future len, hid dim]
+
+        device = feature_history.device
+        mask = (
+            torch.tril(
+                torch.ones(
+                    (future_len, history_len + future_len), device=device
+                ),
+                diagonal=history_len,
+            )
+            .bool()
+            .unsqueeze(0)
+            .unsqueeze(1)
+        )
+        # mask = [1, 1, future len, history len + future len]
+
+        out_attention, attention_score = self.multi_head_attention(
+            enriched_future, enriched_entire, enriched_entire, mask=mask
+        )
+        # out_attention = [batch size, future len, hid dim]
+        # attention_score = [batch size, future len, history len + future len]
+
+        skip_conn_attention_list = [
+            self.gated_skip_conn(
+                out_attention[:, i, :], enriched_future[:, i, :]
+            )
+            for i in range(future_len)
+        ]
+        skip_conn_attention = torch.stack(skip_conn_attention_list, dim=1)
+        # skip_conn_attention = [batch size, future len, hid dim]
+
+        out_decoder_list = [
+            self.feed_forward_grn(skip_conn_attention[:, i, :])
+            for i in range(future_len)
+        ]
+        out_decoder = torch.stack(out_decoder_list, dim=1)
+        # out_decoder = [batch size, future len, hid dim]
+
+        return out_decoder, attention_score
+
+
+class TemporalFusionTransformer(nn.Module):
+    """Temporal fusion transformer.
+    """
+    
+    def __init__(self):
+        super().__init__()
