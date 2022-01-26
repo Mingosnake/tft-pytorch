@@ -29,10 +29,10 @@ class GatingLayer(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: Input to gating layer = [batch size, x dim]
+            x: Input to gating layer = [batch size, *, x dim]
 
         Returns:
-            Return of gating layer = [batch size, out dim]
+            Return of gating layer = [batch size, *, out dim]
         """
         x = self.dropout(x)
 
@@ -64,11 +64,11 @@ class GatedSkipConn(nn.Module):
     def forward(self, x_gate, x_skip):
         """
         Args:
-            x_gate: Input to gating layer = [batch size, x dim]
-            x_skip: Skipped input = [batch size, x dim]
+            x_gate: Input to gating layer = [batch size, *, x dim]
+            x_skip: Skipped input = [batch size, *, out dim]
 
         Returns:
-            Added and normalized output = [batch size, out dim]
+            Added and normalized output = [batch size, *, out dim]
         """
         return self.layernorm(self.gating_layer(x_gate) + x_skip)
 
@@ -100,19 +100,13 @@ class GatedResNet(nn.Module):
         super().__init__()
 
         self.name = "GatedResNet"
+        self.c_dim = c_dim
+        out_dim = out_dim if out_dim else x_dim
 
-        if out_dim is None:  # for usual
-            self.fc_skip = None
-            out_dim = hid_dim
-        else:  # for flattened input's GRN
-            self.fc_skip = nn.Linear(x_dim, out_dim)
-
+        self.fc_skip = nn.Linear(x_dim, out_dim) if out_dim else None
         self.fc_x = nn.Linear(x_dim, hid_dim)
-        self.fc_context = (
-            nn.Linear(c_dim, hid_dim, bias=False)
-            if c_dim is not None
-            else None
-        )
+        if c_dim is not None:
+            self.fc_c = nn.Linear(c_dim, hid_dim, bias=False)
         self.elu = nn.ELU()
 
         self.fc_forward = nn.Linear(hid_dim, hid_dim)
@@ -121,20 +115,20 @@ class GatedResNet(nn.Module):
     def forward(self, x, c=None):
         """
         Args:
-            x: Input = [batch size, x dim]
+            x: Input = [batch size, *, x dim]
             c: Context = [batch size, c dim]
 
         Returns:
             Output of GRN = [batch size, out dim]
         """
-        if (self.fc_context is None) != (c is None):
+        if (self.c_dim is None) != (c is None):
             raise ValueError(f"{self.name} module is created wrong for c_dim")
 
-        skip = x if self.fc_skip is None else self.fc_skip(x)
+        skip = self.fc_skip(x) if self.fc_skip else x
+        hidden = self.fc_x(x)
         if c is not None:
-            hidden = self.elu(self.fc_x(x) + self.fc_context(c))
-        else:
-            hidden = self.elu(self.fc_x(x))
+            hidden = hidden + self.fc_c(c)
+        hidden = self.elu(hidden)
         # hidden = [batch size, hid dim]
         hidden = self.fc_forward(hidden)
         # hidden = [batch size, hid dim]
@@ -375,7 +369,7 @@ class Seq2Seq(nn.Module):
     """
 
     def __init__(
-        self, static_dim, history_dim, future_dim, hid_dim, dropout_rate=1.0,
+        self, static_dim, history_dim, future_dim, hid_dim, dropout_rate=1.0
     ):
         """
         Args:
@@ -585,6 +579,66 @@ class TemporalFusionDecoder(nn.Module):
 class TemporalFusionTransformer(nn.Module):
     """Temporal fusion transformer.
     """
-    
-    def __init__(self):
+
+    def __init__(
+        self,
+        static_dim,
+        history_dim,
+        future_dim,
+        hid_dim,
+        n_heads,
+        out_dim,
+        dropout_rate=1.0,
+    ):
         super().__init__()
+
+        self.quantiles = [10, 50, 90]
+        self.seq_to_seq = Seq2Seq(
+            static_dim,
+            history_dim,
+            future_dim,
+            hid_dim,
+            dropout_rate=dropout_rate,
+        )
+        self.temporal_fusion_decoder = TemporalFusionDecoder(
+            hid_dim, n_heads, dropout_rate=dropout_rate
+        )
+        self.gated_skip_conn = GatedSkipConn(
+            hid_dim, hid_dim, dropout_rate=dropout_rate
+        )
+        self.dense = nn.Linear(hid_dim, out_dim * len(self.quantiles))
+
+    def forward(self, static, history, future):
+        """
+        Args:
+        """
+        future_len = future.shape[1]
+
+        feature_history, feature_future, c_enrichment = self.seq_to_seq(
+            static, history, future
+        )
+        # feature_history = [batch size, history len, hid dim]
+        # feature_future = [batch size, future len, hid dim]
+        # c_enrichment = [batch size, hid dim]
+
+        out_decoder, attention_score = self.temporal_fusion_decoder(
+            feature_history, feature_future, c_enrichment
+        )
+        # out_decoder = [batch size, future len, hid dim]
+        # attention_score = [batch size, future len, history len + future len]
+
+        final_feature_list = [
+            self.gated_skip_conn(out_decoder[:, i, :], feature_future[:, i, :])
+            for i in range(future_len)
+        ]
+        final_feature = torch.stack(final_feature_list, dim=1)
+        # final_feature = [batch size, future len, hid dim]
+
+        quantile_list = [
+            self.dense(final_feature[:, i, :]) for i in range(future_len)
+        ]
+        quantile = torch.stack(quantile_list, dim=1)
+        # quantile = [batch size, future len, 3]
+
+        return quantile, attention_score
+
