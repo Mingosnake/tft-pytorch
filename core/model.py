@@ -578,8 +578,6 @@ class TemporalFusionTransformer(nn.Module):
         """
         Args:
         """
-        future_len = future.shape[1]
-
         feature_history, feature_future, c_enrichment = self.seq_to_seq(
             static, history, future
         )
