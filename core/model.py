@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch import Tensor
 
 
 class GatingLayer(nn.Module):
@@ -12,12 +13,12 @@ class GatingLayer(nn.Module):
         sigmoid: Sigmoid layer
     """
 
-    def __init__(self, x_dim, out_dim, dropout_rate=1.0):
+    def __init__(self, x_dim, out_dim, dropout_rate=0):
         """
         Args:
             x_dim: Input dimension
             out_dim: Output dimension
-            dropout_rate: Dropout rate
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -49,12 +50,12 @@ class GatedSkipConn(nn.Module):
         layernorm: Layer normalization layer
     """
 
-    def __init__(self, x_dim, out_dim, dropout_rate=1.0):
+    def __init__(self, x_dim, out_dim, dropout_rate=0):
         """
         Args:
             x_dim: Input dimension
             out_dim: Output dimension
-            dropout_rate: Dropout rate
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -87,7 +88,7 @@ class GatedResNet(nn.Module):
     """
 
     def __init__(
-        self, x_dim, hid_dim, c_dim=None, out_dim=None, dropout_rate=1.0
+        self, x_dim, hid_dim, c_dim=None, out_dim=None, dropout_rate=0
     ):
         """
         Args:
@@ -116,10 +117,10 @@ class GatedResNet(nn.Module):
         """
         Args:
             x: Input = [batch size, *, x dim]
-            c: Context = [batch size, c dim]
+            c: Context (optional) = [batch size, 1, c dim]
 
         Returns:
-            Output of GRN = [batch size, out dim]
+            Output of GRN = [batch size, *, out dim]
         """
         if (self.c_dim is None) != (c is None):
             raise ValueError(f"{self.name} module is created wrong for c_dim")
@@ -129,9 +130,9 @@ class GatedResNet(nn.Module):
         if c is not None:
             hidden = hidden + self.fc_c(c)
         hidden = self.elu(hidden)
-        # hidden = [batch size, hid dim]
+        # hidden = [batch size, *, hid dim]
         hidden = self.fc_forward(hidden)
-        # hidden = [batch size, hid dim]
+        # hidden = [batch size, *, hid dim]
 
         return self.gated_skip_conn(hidden, skip)
 
@@ -147,13 +148,13 @@ class VarSelectNet(nn.Module):
         var_grn_list: List of GRN for each variable
     """
 
-    def __init__(self, var_dim, hid_dim, c_dim=None, dropout_rate=1.0):
+    def __init__(self, var_dim, hid_dim, c_dim=None, dropout_rate=0):
         """
         Args:
             var_dim: Number of variables
             hid_dim: Dimension of hidden layer
-            c_dim: Dimension of context vector
-            dropout_rate: Dropout rate
+            c_dim: Dimension of context vector (optional)
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -169,48 +170,41 @@ class VarSelectNet(nn.Module):
             dropout_rate=dropout_rate,
         )
 
-        self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.Softmax(dim=-2)
 
-        self.var_grn_list = nn.ModuleList(
-            [
-                GatedResNet(
-                    x_dim=hid_dim, hid_dim=hid_dim, dropout_rate=dropout_rate
-                )
-                for _ in range(var_dim)
-            ]
+        self.var_grn = GatedResNet(
+            x_dim=hid_dim, hid_dim=hid_dim, dropout_rate=dropout_rate
         )
 
-    def forward(self, x: torch.Tensor, c=None):
+    def forward(self, x: Tensor, c=None):
         """
         Args:
-            x: Input = [batch size, var dim, hid dim]
-            c: Context = [batch size, c dim]
+            x: Input = [batch size, *, var dim, hid dim]
+            c: Context (optional) = [batch size, 1, c dim]
 
         Returns:
             output: Output of variable selection network
-                = [batch size, hid dim]
+                = [batch size, *, hid dim]
         """
         if (self.c_dim is None) != (c is None):
             raise ValueError(f"{self.name} module is created wrong for c_dim")
 
-        flat = x.view(x.shape[0], -1)
-        if c is not None:
-            var_sel_wt = self.softmax(self.sel_wt_grn(flat, c))
-        else:
-            var_sel_wt = self.softmax(self.sel_wt_grn(flat))
-        # var_sel_wt: Variable selection weights = [batch size, var dim]
-        var_sel_wt = var_sel_wt.unsqueeze(1)
-        # var_sel_wt = [batch size, 1, var dim]
+        flat_shape = list(x.shape[:-2])
+        flat_shape.append(-1)
+        flat = x.view(flat_shape)
+        var_sel_wt = self.softmax(self.sel_wt_grn(flat, c))
+        # var_sel_wt: Variable selection weights = [batch size, *, var dim]
+        var_sel_wt = var_sel_wt.unsqueeze(-2)
+        # var_sel_wt = [batch size, *, 1, var dim]
 
-        var_list = [
-            var_grn(x[:, i, :]) for i, var_grn in enumerate(self.var_grn_list)
-        ]
-        variables = torch.stack(var_list, dim=1)
-        # variables = [batch size, var dim, hid dim]
-        output = torch.bmm(var_sel_wt, variables)
-        # output = [batch size, 1, hid dim]
-        output = output.squeeze(1)
-        # output = [batch size, hid dim]
+        variables = self.var_grn(x)
+        # variables = [batch size, *, var dim, hid dim]
+        if var_sel_wt.shape[:-2] == variables[:-2]:
+            raise ValueError("Matrix shape does not match")
+        output = torch.matmul(var_sel_wt, variables)
+        # output = [batch size, *, 1, hid dim]
+        output = output.squeeze(-2)
+        # output = [batch size, *, hid dim]
 
         return output
 
@@ -229,12 +223,12 @@ class MultiHeadAttention(nn.Module):
         scale: Scale factor of dot-product attention
     """
 
-    def __init__(self, hid_dim, n_heads, dropout_rate=1.0):
+    def __init__(self, hid_dim, n_heads, dropout_rate=0):
         """
         Args:
             hid_dim: Dimension of input and output in multi-head attention
             n_heads: Number of heads
-            dropout_rate: Dropout rate
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -253,7 +247,7 @@ class MultiHeadAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout_rate)
 
-        self.scale = torch.sqrt(torch.FloatTensor([self.attn_dim]))
+        self.scale = torch.FloatTensor([self.attn_dim ** -0.5])
 
     def forward(self, query, key, value, mask=None):
         """
@@ -264,7 +258,7 @@ class MultiHeadAttention(nn.Module):
                 = [batch size, key len, hid dim]
             value: Value for multi-head attention
                 = [batch size, value len, hid dim]
-            mask: Masking tensor = [1, 1, query len, key len]
+            mask: Masking tensor (optional) = [1, 1, query len, key len]
 
         Returns:
             output: Output of multi-head attention
@@ -291,7 +285,7 @@ class MultiHeadAttention(nn.Module):
         # K = [batch size, n heads, key len, attn dim]
         # V = [batch size, value len, attn dim]
 
-        energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) / self.scale
+        energy = torch.matmul(Q, K.permute(0, 1, 3, 2)) * self.scale
         # energy = [batch size, n heads, query len, key len]
 
         if mask is not None:
@@ -317,11 +311,11 @@ class StaticCovariateEncoders(nn.Module):
         grn_list: List of GRN for contexts
     """
 
-    def __init__(self, hid_dim, dropout_rate=1.0):
+    def __init__(self, hid_dim, dropout_rate=0):
         """
         Args:
             hid_dim: Dimension of static covariate encoders
-            dropout_rate: Dropout rate
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -339,18 +333,17 @@ class StaticCovariateEncoders(nn.Module):
         
         Returns:
             c_selection: Context vector for variable selection network
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
             c_cell: Context vector for initial cell state of LSTM
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
             c_hidden: Context vector for initial cell state of LSTM
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
             c_enrichment: Context vector for static enrichment layer
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
         """
-        c_selection = self.grn_list[0](x)
-        c_cell = self.grn_list[1](x)
-        c_hidden = self.grn_list[2](x)
-        c_enrichment = self.grn_list[3](x)
+        c_selection, c_cell, c_hidden, c_enrichment = tuple(
+            grn(x).unsqueeze(1) for grn in self.grn_list
+        )
 
         return c_selection, c_cell, c_hidden, c_enrichment
 
@@ -369,7 +362,7 @@ class Seq2Seq(nn.Module):
     """
 
     def __init__(
-        self, static_dim, history_dim, future_dim, hid_dim, dropout_rate=1.0
+        self, static_dim, history_dim, future_dim, hid_dim, dropout_rate=0
     ):
         """
         Args:
@@ -377,7 +370,7 @@ class Seq2Seq(nn.Module):
             history_dim: Dimension of historical inputs
             future_dim: Dimension of known future inputs
             hid_dim: Dimension of model
-            dropout_rate: Dropout rate
+            dropout_rate: Dropout rate (optional)
         """
         super().__init__()
 
@@ -403,7 +396,7 @@ class Seq2Seq(nn.Module):
             hid_dim, hid_dim, dropout_rate=dropout_rate
         )
 
-    def forward(self, static, history: torch.Tensor, future: torch.Tensor):
+    def forward(self, static, history: Tensor, future: Tensor):
         """
         Args:
             static: Static metadata = [batch size, static dim, hid dim]
@@ -418,7 +411,7 @@ class Seq2Seq(nn.Module):
             feature_future: Future temporal features
                 = [batch size, future len, hid dim]
             c_enrichment: Context vector for static enrichment layer
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
         """
         selected_static = self.static_sel(static)
         # selected_static = [batch size, hid dim]
@@ -426,22 +419,12 @@ class Seq2Seq(nn.Module):
         c_selection, c_cell, c_hidden, c_enrichment = self.static_encoders(
             selected_static
         )
-        # c_selection, ... = [batch size, hid dim]
+        # c_selection, ... = [batch size, 1, hid dim]
 
-        history_len = history.shape[1]
-        history_list = [
-            self.history_sel(history[:, i, :, :], c=c_selection)
-            for i in range(history_len)
-        ]
-        selected_history = torch.stack(history_list, dim=1)
+        selected_history = self.history_sel(history, c=c_selection)
         # selected_history = [batch size, history len, hid dim]
 
-        future_len = future.shape[1]
-        future_list = [
-            self.future_sel(future[:, i, :, :], c=c_selection)
-            for i in range(future_len)
-        ]
-        selected_future = torch.stack(future_list, dim=1)
+        selected_future = self.future_sel(future, c=c_selection)
         # selected_future = [batch size, future len, hid dim]
 
         out_lstm_history, (hidden_state, cell_state) = self.encoder_lstm(
@@ -453,22 +436,12 @@ class Seq2Seq(nn.Module):
         )
         # out_lstm_future = [batch size, future len, hid dim]
 
-        feature_history_list = [
-            self.gated_skip_conn(
-                out_lstm_history[:, i, :], selected_history[:, i, :]
-            )
-            for i in range(history_len)
-        ]
-        feature_history = torch.stack(feature_history_list, dim=1)
+        feature_history = self.gated_skip_conn(
+            out_lstm_history, selected_history
+        )
         # feature_history = [batch size, history len, hid dim]
 
-        feature_future_list = [
-            self.gated_skip_conn(
-                out_lstm_future[:, i, :], selected_future[:, i, :]
-            )
-            for i in range(future_len)
-        ]
-        feature_future = torch.stack(feature_future_list, dim=1)
+        feature_future = self.gated_skip_conn(out_lstm_future, selected_future)
         # feature_future = [batch size, future len, hid dim]
 
         return feature_history, feature_future, c_enrichment
@@ -484,7 +457,13 @@ class TemporalFusionDecoder(nn.Module):
         feed_forward_grn: Gated Residual Network for position-wise feed-forward
     """
 
-    def __init__(self, hid_dim, n_heads, dropout_rate=1.0):
+    def __init__(self, hid_dim, n_heads, dropout_rate=0):
+        """
+        Args:
+            hid_dim: Dimension of model
+            n_heads: Number of heads for multi-head attention
+            dropout_rate: Dropout rate (optional)
+        """
         super().__init__()
 
         self.static_enrichment_grn = GatedResNet(
@@ -508,7 +487,7 @@ class TemporalFusionDecoder(nn.Module):
             feature_future: Future temporal features
                 = [batch size, future len, hid dim]
             c_enrichment: Context vector for static enrichment layer
-                = [batch size, hid dim]
+                = [batch size, 1, hid dim]
                 
         Returns:
             out_decoder: Output of temporal fusion decoder
@@ -516,28 +495,23 @@ class TemporalFusionDecoder(nn.Module):
             attention_score: Attention weights
                 = [batch size, future len, history len + future len]
         """
+        device = feature_history.device
         history_len = feature_history.shape[1]
-        enriched_history_list = [
-            self.static_enrichment_grn(
-                feature_history[:, i, :], c=c_enrichment
-            )
-            for i in range(history_len)
-        ]
-        enriched_history = torch.stack(enriched_history_list, dim=1)
+        future_len = feature_future.shape[1]
+
+        enriched_history = self.static_enrichment_grn(
+            feature_history, c=c_enrichment
+        )
         # enriched_history = [batch size, history len, hid dim]
 
-        future_len = feature_future.shape[1]
-        enriched_future_list = [
-            self.static_enrichment_grn(feature_future[:, i, :], c=c_enrichment)
-            for i in range(future_len)
-        ]
-        enriched_future = torch.stack(enriched_future_list, dim=1)
+        enriched_future = self.static_enrichment_grn(
+            feature_future, c=c_enrichment
+        )
         # enriched_future = [batch size, future len, hid dim]
 
         enriched_entire = torch.cat((enriched_history, enriched_future), dim=1)
         # enriched_entire = [batch size, history len + future len, hid dim]
 
-        device = feature_history.device
         mask = (
             torch.tril(
                 torch.ones(
@@ -557,20 +531,12 @@ class TemporalFusionDecoder(nn.Module):
         # out_attention = [batch size, future len, hid dim]
         # attention_score = [batch size, future len, history len + future len]
 
-        skip_conn_attention_list = [
-            self.gated_skip_conn(
-                out_attention[:, i, :], enriched_future[:, i, :]
-            )
-            for i in range(future_len)
-        ]
-        skip_conn_attention = torch.stack(skip_conn_attention_list, dim=1)
+        skip_conn_attention = self.gated_skip_conn(
+            out_attention, enriched_future
+        )
         # skip_conn_attention = [batch size, future len, hid dim]
 
-        out_decoder_list = [
-            self.feed_forward_grn(skip_conn_attention[:, i, :])
-            for i in range(future_len)
-        ]
-        out_decoder = torch.stack(out_decoder_list, dim=1)
+        out_decoder = self.feed_forward_grn(skip_conn_attention)
         # out_decoder = [batch size, future len, hid dim]
 
         return out_decoder, attention_score
@@ -588,7 +554,7 @@ class TemporalFusionTransformer(nn.Module):
         hid_dim,
         n_heads,
         out_dim,
-        dropout_rate=1.0,
+        dropout_rate=0,
     ):
         super().__init__()
 
@@ -606,7 +572,7 @@ class TemporalFusionTransformer(nn.Module):
         self.gated_skip_conn = GatedSkipConn(
             hid_dim, hid_dim, dropout_rate=dropout_rate
         )
-        self.dense = nn.Linear(hid_dim, out_dim * len(self.quantiles))
+        self.fc_out = nn.Linear(hid_dim, out_dim * len(self.quantiles))
 
     def forward(self, static, history, future):
         """
@@ -619,7 +585,7 @@ class TemporalFusionTransformer(nn.Module):
         )
         # feature_history = [batch size, history len, hid dim]
         # feature_future = [batch size, future len, hid dim]
-        # c_enrichment = [batch size, hid dim]
+        # c_enrichment = [batch size, 1, hid dim]
 
         out_decoder, attention_score = self.temporal_fusion_decoder(
             feature_history, feature_future, c_enrichment
@@ -627,17 +593,10 @@ class TemporalFusionTransformer(nn.Module):
         # out_decoder = [batch size, future len, hid dim]
         # attention_score = [batch size, future len, history len + future len]
 
-        final_feature_list = [
-            self.gated_skip_conn(out_decoder[:, i, :], feature_future[:, i, :])
-            for i in range(future_len)
-        ]
-        final_feature = torch.stack(final_feature_list, dim=1)
+        final_feature = self.gated_skip_conn(out_decoder, feature_future)
         # final_feature = [batch size, future len, hid dim]
 
-        quantile_list = [
-            self.dense(final_feature[:, i, :]) for i in range(future_len)
-        ]
-        quantile = torch.stack(quantile_list, dim=1)
+        quantile = self.fc_out(final_feature)
         # quantile = [batch size, future len, 3]
 
         return quantile, attention_score
