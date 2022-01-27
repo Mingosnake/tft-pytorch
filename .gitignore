@@ -130,6 +130,8 @@ dmypy.json
 
 # Data files
 *.csv
+*.txt
+*.zip
 
 # Test file
 test.py
