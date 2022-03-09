@@ -133,5 +133,8 @@ dmypy.json
 *.txt
 *.zip
 
+# vscode settings
+.vscode
+
 # Test file
 test.py
